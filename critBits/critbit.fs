@@ -10,17 +10,16 @@
 
 [<NoEquality>]
 [<NoComparison>]
-[<Struct>]
-type NodeDatum =
-    | Intermediate of left: Node option * right: Node option
+type Node =
     | Leaf of key: string
+    | Intermediate of NodeDatum
 and
-    [<NoEquality>]
-    [<NoComparison>]
-    Node =
+    [<Struct>]
+    NodeDatum =
     { byte: int32; // the byte that differs
      otherBits: byte; // a single byte where every bit except the critical bit is true
-     data: NodeDatum; }
+     left: Node;
+     right: Node; }
 
 module private Helpers =
     let inline goLeft (otherBits: byte) (c: byte) =
@@ -70,10 +69,10 @@ type CritBitTree() =
     // Note: always returns a leaf node.
     // this is not encoded in the type system to match
     // the paper
-    let rec walkTree (str: string) (n: Node): Node =
-        match n.data with
-        | Leaf key -> n
-        | Intermediate (l, r) ->
+    let rec walkTree (str: string) (node: Node): string =
+        match node with
+        | Leaf key -> key
+        | Intermediate n ->
             // Calculate direction
             let (c: byte) =
                 let nodeByte = n.byte
@@ -82,8 +81,7 @@ type CritBitTree() =
                 else 0uy
             let goLeft = goLeft n.otherBits c
             let nextNode =
-                if goLeft then l else r
-                |> Option.get // if this fails, it is an error
+                if goLeft then n.left else n.right
             walkTree str nextNode
 
     member val Count = 0 with get, set
@@ -92,29 +90,24 @@ type CritBitTree() =
         match root with
         | None -> false
         | Some n ->
-            let n = walkTree str n
-            match n.data with
-            | Leaf key -> key = str
-            | Intermediate(_, _) -> failwith "walkTree always returns a leaf node"
+            let key = walkTree str n
+            key = str
 
     member _.Insert(str: string) =
         match root with
         | None -> // empty tree
             root <- Some {byte=0; otherBits=0uy; data= Leaf str;}
         | Some root ->
-            let n = walkTree str root
-            match n.data with
-            | Leaf bestMatch ->
-                match findDifferingByte str bestMatch with
-                | ValueNone -> () // insert has no effect if key exists
-                | ValueSome newByte ->
-                    let newOtherBits = findDifferingBit newByte
-                    let newOtherBits = newOtherBits ^^^ 255uy
-                    let c = bestMatch.[newByte]
-                    let direction = goLeft newOtherBits c
-                    // allocate new node
-                    let newNode: Node =
-                        {byte = newByte;
-                        otherbits = newOtherBits;
-                        }
-            | Intermediate(_, _) -> failwith "walkTree always returns a leaf node"
+            let bestMatch = walkTree str root
+            match findDifferingByte str bestMatch with
+            | ValueNone -> () // insert has no effect if key exists
+            | ValueSome newByte ->
+                let newOtherBits = findDifferingBit newByte
+                let newOtherBits = newOtherBits ^^^ 255uy
+                let c = bestMatch.[newByte]
+                let direction = goLeft newOtherBits c
+                // allocate new node
+                //let newNode: Node =
+                //    {byte = newByte;
+                //    otherbits = newOtherBits;
+                //    }
