@@ -1,0 +1,13 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>netcoreapp3.1</TargetFramework>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="critbit.fs" />
+    </ItemGroup>
+    <Target Name="FSharpLint" AfterTargets="AfterBuild">
+        <Exec Command="dotnet fsharplint -f msbuild lint --lint-config ../fsharplint.json $(MSBuildProjectFullPath)" ConsoleToMsBuild="true" IgnoreExitCode="true" />
+    </Target>
+</Project>
