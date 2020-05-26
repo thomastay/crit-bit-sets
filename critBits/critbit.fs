@@ -28,7 +28,9 @@ module private Helpers =
     let inline goLeft (otherBits: byte) (c: byte) =
         ((1 + int (otherBits ||| c)) >>> 8) = 0
 
-    // finds the differing byte between strings: str and u
+    // finds the differing byte between strings: u and p
+    // recall that p is the existing best match string,
+    // and u is the string we are trying to match.
     // Recall that in .NET, strings are UTF-16!
     // So, we must cast the string to a byte array, using
     // some sort of decoding logic
@@ -36,13 +38,14 @@ module private Helpers =
     // If necessary, you can change the encoding in the Add() function
     // pt. 11
     let inline findDifferingByte (uBytes: byte[]) (pBytes: byte[]): struct (int * byte) voption =
-        assert (Array.length pBytes >= Array.length uBytes)
         let rec helper newByte =
-            if newByte >= Array.length uBytes
-            then
+            if newByte >= Array.length uBytes then
                 if Array.length pBytes = Array.length uBytes
                 then ValueNone // no differing bits; arrays are identical
                 else ValueSome struct (newByte, pBytes.[newByte]) // next available byte
+            elif newByte >= Array.length pBytes then
+                assert (Array.length uBytes > Array.length pBytes)
+                ValueSome struct (newByte, uBytes.[newByte])
             else
                 let p = pBytes.[newByte]
                 let u = uBytes.[newByte]
@@ -73,7 +76,7 @@ type CritBitTree() =
 
     // Walks the tree, to find the leaf node
     // that has the closest match to uBytes
-    // pt. 5
+    // pt. 5 and 6
     let rec walkTree (uBytes: byte[]) (node: Node): string =
         match node with
         | Leaf key -> key
@@ -105,10 +108,11 @@ type CritBitTree() =
     // Returns true if the add was successful
     // Returns false if the string is already in the tree
     // pt.8 Inserting into the Tree
-    member _.Add(str: string): bool =
+    member this.Add(str: string): bool =
         match root with
         | None -> // pt. 9 (empty tree)
             root <- Some (Leaf str)
+            this.Count <- 1
             true
         | Some rootNode ->
             let uBytes = Encoding.UTF8.GetBytes str
@@ -119,7 +123,10 @@ type CritBitTree() =
             | ValueSome (newByte, newOtherBits) ->
                 // pt. 12 (partial)
                 let newOtherBits = (findDifferingBit newOtherBits) ^^^ 255uy
-                let isStrGoesToRightChild = goLeft newOtherBits pBytes.[newByte]
+                let isStrGoesToRightChild =
+                    if newByte >= Array.length pBytes
+                    then goLeft newOtherBits 0uy
+                    else goLeft newOtherBits pBytes.[newByte]
                 // pt. 14 (Alloc new node)
                 let inline makeNewNode oldNode =
                     if isStrGoesToRightChild
@@ -131,6 +138,14 @@ type CritBitTree() =
                     // unfortunately, need to special case
                     // when the root node is a leaf, since we cannot take
                     // arbitrary pointers
+                    root <- Some (makeNewNode rootNode)
+                | Intermediate q when
+                    (q.byte > newByte) ||
+                        (q.byte = newByte && q.otherBits > newOtherBits) ->
+                    // If the root node's byte is smaller than newByte,
+                    // we will have to replace root node with another
+                    // intermediate. Unfortunately, another special case.
+                    // This is because we can't modify random pointers in F#
                     root <- Some (makeNewNode rootNode)
                 | Intermediate q ->
                     let rec updateParentForNewNode (q: NodeDatum) =
@@ -156,5 +171,6 @@ type CritBitTree() =
                         | Intermediate x ->
                             updateParentForNewNode x // loop()
                     updateParentForNewNode q
-                // In both Leaf and Intermediate cases, return true
+                // In all 3 Leaf and Intermediate cases, inc count
+                this.Count <- this.Count + 1
                 true
