@@ -7,6 +7,8 @@
 // A few notes for the reader:
 // 1uy means treat 1 as an 8-bit unsigned integer:
 //   in effect, one byte on any modern machine
+// pt. n means Point number n in the paper
+// e.g. pt. 5 refers to "Searching the Tree"
 
 [<NoEquality>]
 [<NoComparison>]
@@ -32,6 +34,7 @@ module private Helpers =
     // some sort of decoding logic
     // For simplicity, this library assumes a UTF-8 encoded string
     // If necessary, you can change the encoding in the Add() function
+    // pt. 11
     let inline findDifferingByte (uBytes: byte[]) (pBytes: byte[]): struct (int * byte) voption =
         assert (Array.length pBytes >= Array.length uBytes)
         let rec helper newByte =
@@ -51,6 +54,7 @@ module private Helpers =
     // Given as input a byte,
     // returns a byte with only one bit set
     // which is the most significant differing bit
+    // pt. 12 (partial)
     let rec findDifferingBit (newOtherBits: byte) =
         let a = newOtherBits &&& (newOtherBits - 1uy)
         if a = 0uy
@@ -67,90 +71,90 @@ open Helpers
 type CritBitTree() =
     let mutable root: Node option = None
 
-    // Note: always returns a leaf node.
-    // this is not encoded in the type system to match
-    // the paper
-    let rec walkTree (str: string) (node: Node): string =
+    // Walks the tree, to find the leaf node
+    // that has the closest match to uBytes
+    // pt. 5
+    let rec walkTree (uBytes: byte[]) (node: Node): string =
         match node with
         | Leaf key -> key
         | Intermediate n ->
             // Calculate direction
-            let (c: byte) =
+            let c =
                 let nodeByte = n.byte
-                if nodeByte < (String.length str)
-                then byte str.[nodeByte]
+                if nodeByte < Array.length uBytes
+                then uBytes.[nodeByte]
                 else 0uy
-            let goLeft = goLeft n.otherBits c
-            let nextNode =
-                if goLeft then n.left else n.right
-            walkTree str nextNode
+            let isLeft = goLeft n.otherBits c
+            let nextNode = if isLeft then n.left else n.right
+            walkTree uBytes nextNode
 
     member val Count = 0 with get, set
 
     member _.Clear() =
         root <- None  // ahh... the good thing about having a GC...
 
+    // pt. 3 Searching the tree
     member _.Contains(str: string): bool =
         match root with
-        | None -> false
+        | None -> false  // pt. 4
         | Some n ->
-            let key = walkTree str n
-            key = str
+            let uBytes = Encoding.UTF8.GetBytes str
+            let key = walkTree uBytes n
+            key = str   // pt. 7
 
+    // Returns true if the add was successful
+    // Returns false if the string is already in the tree
+    // pt.8 Inserting into the Tree
     member _.Add(str: string): bool =
         match root with
-        | None -> // empty tree
+        | None -> // pt. 9 (empty tree)
             root <- Some (Leaf str)
-            true  // adding to empty tree succeeds
+            true
         | Some rootNode ->
-            let bestMatch = walkTree str rootNode
             let uBytes = Encoding.UTF8.GetBytes str
+            let bestMatch = walkTree uBytes rootNode
             let pBytes = Encoding.UTF8.GetBytes bestMatch
             match findDifferingByte uBytes pBytes with
             | ValueNone -> false // insert has no effect if key exists
             | ValueSome (newByte, newOtherBits) ->
+                // pt. 12 (partial)
                 let newOtherBits = (findDifferingBit newOtherBits) ^^^ 255uy
                 let isStrGoesToRightChild = goLeft newOtherBits pBytes.[newByte]
+                // pt. 14 (Alloc new node)
+                let inline makeNewNode oldNode =
+                    if isStrGoesToRightChild
+                    then constructNode newByte newOtherBits oldNode (Leaf str)
+                    else constructNode newByte newOtherBits (Leaf str) oldNode
+                // pt. 15 (Insert new node)
                 match rootNode with
                 | Leaf _ ->
                     // unfortunately, need to special case
-                    // the root node leaf case
-                    let newNode =
-                        if isStrGoesToRightChild
-                        then constructNode newByte newOtherBits rootNode (Leaf str)
-                        else constructNode newByte newOtherBits (Leaf str) rootNode
-                    root <- Some newNode
-                    true
-                | Intermediate _ ->
-                let rec updateParentForNewNode (q: NodeDatum): unit =
-                    let c =
-                        if q.byte < Array.length uBytes
-                        then uBytes.[q.byte]
-                        else 0uy
-                    let direction = goLeft q.otherBits c
-                    let nextNode =
-                        if direction then q.left else q.right
-                    match nextNode with
-                    | Leaf _ ->
-                        let newNode =
-                            if isStrGoesToRightChild
-                            then constructNode newByte newOtherBits nextNode (Leaf str)
-                            else constructNode newByte newOtherBits (Leaf str) nextNode
-                        // update parent node
-                        if direction
-                        then q.left <- newNode
-                        else q.right <- newNode
-                    | Intermediate x when
-                        (x.byte > newByte) ||
-                            (x.byte = newByte && x.otherBits > newOtherBits) ->
-                        let newNode =
-                            if isStrGoesToRightChild
-                            then constructNode newByte newOtherBits nextNode (Leaf str)
-                            else constructNode newByte newOtherBits (Leaf str) nextNode
-                        // update parent node
-                        if direction
-                        then q.left <- newNode
-                        else q.right <- newNode
-                    | Intermediate x ->
-                        updateParentForNewNode x
+                    // when the root node is a leaf, since we cannot take
+                    // arbitrary pointers
+                    root <- Some (makeNewNode rootNode)
+                | Intermediate q ->
+                    let rec updateParentForNewNode (q: NodeDatum) =
+                        let c =
+                            if q.byte < Array.length uBytes
+                            then uBytes.[q.byte]
+                            else 0uy
+                        let isLeft = goLeft q.otherBits c
+                        let nextNode = if isLeft then q.left else q.right
+                        // helper function called in two places below
+                        let inline updateParentNode() =
+                            let newNode = makeNewNode nextNode
+                            // update parent node
+                            if isLeft
+                            then q.left <- newNode
+                            else q.right <- newNode
+                        match nextNode with
+                        | Leaf _ -> updateParentNode()
+                        | Intermediate x when
+                            (x.byte > newByte) ||
+                                (x.byte = newByte && x.otherBits > newOtherBits) ->
+                            updateParentNode()
+                        | Intermediate x ->
+                            updateParentForNewNode x // loop()
+                    updateParentForNewNode q
+                // In both Leaf and Intermediate cases, return true
                 true
