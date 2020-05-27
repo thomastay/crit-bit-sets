@@ -6,10 +6,21 @@
 // C: https://github.com/blynn/blt/blob/master/blt.c
 
 // Main differences from the paper:
+// - The mask (called otherBits in the paper) is now just a regular bit mask
+//   with 0s everywhere except a 1 in the crit bit position. Now just called mask.
+//   Langley used his reverse-mask technique so as to be able
+//   to compute the direction as an integer (0 or 1) with no branching.
+//   However, since we explicitly encode the left and right pointers, and
+//   we need a boolean to decide between them, the reverse-mask technique
+//   is not needed.
+// - Due to the above point, any comparison of otherBits is reversed.
+//   See the function: compareNodes
+
 // - This code uses optimizations mentioned in Lynn, B. (2014).
 //    In particular, we use their SWAR technique, and skip certain checks
 //    when walking down the tree.
 //    See blt.c for more details.
+
 // - In the spirit of type safety, the code uses a discriminated union
 //   instead of void * with LSB bit tag to model the domain.
 //   A Node is now either a Leaf node,
@@ -34,8 +45,8 @@ type Node =
     | Intermediate of NodeDatum
 and
     NodeDatum =
-    { byte: int; // the byte that differs
-     otherBits: byte; // a single byte where every bit except the critical bit is true
+    {byte: int; // the byte that differs
+     mask: byte; // 8bit mask with a 1 at the critical position.
      mutable left: Node;
      mutable right: Node; }
 
@@ -44,17 +55,12 @@ open System.Numerics
 
 module private Helpers =
     // Computes whether c has a 0 or a 1 in the crit bit position
-    // marked out by otherBits
-    // otherBits is a 8-bit byte which is all 1s except at one position
-    // demarkating the critical bit.
-    // e.g. otherBits = 11101111, c = 10110010
-    // in this case, otherBits ||| c = 1111111
-    // so the function returns false
-    // e.g. otherBits = 01111111, c = 01110010
-    // otherBits ||| c = 01111111
-    // so, the function returns true
-    let inline goLeft (otherBits: byte) (c: byte) =
-        ((1 + int (otherBits ||| c)) >>> 8) = 0
+    // marked out by mask
+    // mask is a 8-bit byte which has a 1 at exactly the critical bit
+    // e.g. otherBits = 00010000, c = 10110010 -> true
+    //      otherBits = 10000000, c = 01110010 -> false
+    let inline goLeft (mask: byte) (c: byte) =
+        (mask &&& c) = 0uy
 
     // finds the differing byte between strings: u and p
     // recall that p is the existing best match string,
@@ -62,6 +68,9 @@ module private Helpers =
     // pt. 11
     let inline findDifferingByte (uBytes: byte[]) (pBytes: byte[]): struct (int * byte) voption =
         let rec helper newByte =
+            // The first two if checks are handling edge cases
+            // when the loop counter (newByte) goes off the end of
+            // either the uBytes or pBytes array.
             if newByte >= Array.length uBytes then
                 if Array.length pBytes = Array.length uBytes
                 then ValueNone // no differing bits; arrays are identical
@@ -69,7 +78,7 @@ module private Helpers =
             elif newByte >= Array.length pBytes then
                 assert (Array.length uBytes > Array.length pBytes)
                 ValueSome struct (newByte, uBytes.[newByte])
-            else
+            else // this is the meat of the code!
                 let p = pBytes.[newByte]
                 let u = uBytes.[newByte]
                 if p <> u
@@ -79,10 +88,9 @@ module private Helpers =
 
     // Credit to Lynn
     // Given as input a byte,
-    // returns a byte with every bit except one
-    // which is the most significant differing bit
+    // returns a mask with a 1 in the position of the leading bit of b
     // e.g. given as input 00101011
-    // returns 11011111 (the opposite of 00100000)
+    // returns 00100000
     // pt. 12 (partial)
     let inline findDifferingBit (b: byte) =
         // SWAR trick that sets every bit after the leading bit to 1.
@@ -90,16 +98,16 @@ module private Helpers =
         let b = b ||| (b >>> 2)
         let b = b ||| (b >>> 4)
         // Zero all the bits after the leading bit
-        let z = b &&& ~~~(b >>> 1)
-        ~~~z // invert --> somehow, this isn't done by Lynn's code. He must have found another hack.
+        b &&& ~~~(b >>> 1)
+        // ~~~z // invert --> somehow, this isn't done by Lynn's code. He must have found another hack.
 
     // experimental approach to calculating the bit mask
     let findDifferingBit2 (b: byte): byte =
         let leadingBit = BitOperations.Log2 (uint32 b)
         1uy <<< leadingBit
 
-    let inline constructNode byte otherBits left right =
-        Intermediate {byte=byte; otherBits=otherBits; left=left; right=right}
+    let inline constructNode byte mask left right =
+        Intermediate {byte=byte; mask=mask; left=left; right=right}
 
     // Optimization credited to Lynn
     // instead of doing two comparisons, this calcualtes
@@ -107,11 +115,15 @@ module private Helpers =
     // by shifting int by 8 then adding the byte, then doing
     // a regular integer comparison.
     // Less branches === happier branch predictor!
+    // HOWEVER: if a = b and x < y,
+    //     this means that y's leading bit comes FIRST
+    //     so we want to stop if a = b and x > y
+    //     This is a big deviation from the paper.
     //    Note: arguments not passed in as tuple for efficiency
     //    Tuple creation involves additional allocations, but this
     //    function is meant to be inlined.
     let inline compareNodes (a: int) (x: byte) (b: int) (y: byte): bool =
-        (a <<< 8) + (int x) < (b <<< 8) + (int y)
+        (a <<< 8) + (int y) < (b <<< 8) + (int x)
 
 open Helpers
 
@@ -128,12 +140,13 @@ type CritBitTree() =
         | Leaf key -> key
         | Intermediate n ->
             // Calculate direction
+            // TODO: this can now be optimized.
             let c =
                 let nodeByte = n.byte
                 if nodeByte < Array.length uBytes
                 then uBytes.[nodeByte]
                 else 0uy
-            let isLeft = goLeft n.otherBits c
+            let isLeft = goLeft n.mask c
             let nextNode = if isLeft then n.left else n.right
             walkTree uBytes nextNode
 
@@ -165,19 +178,21 @@ type CritBitTree() =
             let bestMatch = walkTree uBytes rootNode
             let pBytes = Encoding.UTF8.GetBytes bestMatch
             match findDifferingByte uBytes pBytes with
-            | ValueNone -> false // insert has no effect if key exists
+            | ValueNone -> false // insert has no effect if key exists.
             | ValueSome (newByte, newOtherBits) ->
                 // pt. 12 (partial)
-                let newOtherBits = findDifferingBit newOtherBits
-                let isStrGoesToRightChild =
-                    if newByte >= Array.length pBytes
-                    then goLeft newOtherBits 0uy
-                    else goLeft newOtherBits pBytes.[newByte]
+                let newMask = findDifferingBit newOtherBits
+                // If the differing byte (newByte) is beyond the original string
+                // e.g. pBytes is "to", and uBytes is "too", newBytes = 3,
+                // then the old Node must always go to left child, by construction.
+                let isOldNodeGoesToLeftChild =
+                    if newByte >= Array.length pBytes then true
+                    else goLeft newMask pBytes.[newByte]
                 // pt. 14 (Alloc new node)
                 let inline makeNewNode oldNode =
-                    if isStrGoesToRightChild
-                    then constructNode newByte newOtherBits oldNode (Leaf str)
-                    else constructNode newByte newOtherBits (Leaf str) oldNode
+                    if isOldNodeGoesToLeftChild
+                    then constructNode newByte newMask oldNode (Leaf str)
+                    else constructNode newByte newMask (Leaf str) oldNode
                 // pt. 15 (Insert new node)
                 match rootNode with
                 | Leaf _ ->
@@ -186,7 +201,7 @@ type CritBitTree() =
                     // arbitrary pointers
                     root <- Some (makeNewNode rootNode)
                 | Intermediate q when
-                    compareNodes newByte newOtherBits q.byte q.otherBits ->
+                    compareNodes newByte newMask q.byte q.mask ->
                     // If the root node's byte is smaller than newByte,
                     // we will have to replace root node with another
                     // intermediate. Unfortunately, another special case.
@@ -194,11 +209,12 @@ type CritBitTree() =
                     root <- Some (makeNewNode rootNode)
                 | Intermediate q ->
                     let rec updateParentForNewNode (q: NodeDatum) =
+                        assert (q.byte < Array.length uBytes) // unsure if this assertion holds?
                         let c =
                             if q.byte < Array.length uBytes
                             then uBytes.[q.byte]
                             else 0uy
-                        let isLeft = goLeft q.otherBits c
+                        let isLeft = goLeft q.mask c
                         let nextNode = if isLeft then q.left else q.right
                         // helper function called in two places below
                         let inline updateParentNode() =
@@ -210,7 +226,7 @@ type CritBitTree() =
                         match nextNode with
                         | Leaf _ -> updateParentNode()
                         | Intermediate x when
-                            compareNodes newByte newOtherBits x.byte x.otherBits ->
+                            compareNodes newByte newMask x.byte x.mask ->
                             updateParentNode()
                         | Intermediate x ->
                             updateParentForNewNode x // loop()
