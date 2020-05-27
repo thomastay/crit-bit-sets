@@ -17,8 +17,7 @@
 //   See the function: compareNodes
 
 // - This code uses optimizations mentioned in Lynn, B. (2014).
-//    In particular, we use their SWAR technique, and skip certain checks
-//    when walking down the tree.
+//    In particular, we use their SWAR technique, and tuple comparison checks
 //    See blt.c for more details.
 
 // - In the spirit of type safety, the code uses a discriminated union
@@ -57,11 +56,12 @@ module private Helpers =
     // Computes whether c has a 0 or a 1 in the crit bit position
     // marked out by mask
     // mask is a 8-bit byte which has a 1 at exactly the critical bit
-    // e.g. otherBits = 00010000, c = 10110010 -> true
-    //      otherBits = 10000000, c = 01110010 -> false
+    // e.g. mask = 00010000, c = 10110010 -> true
+    //      mask = 10000000, c = 01110010 -> false
     let inline goLeft (mask: byte) (c: byte) =
         (mask &&& c) = 0uy
 
+    // TODO: optimize this! This is just crying out for SIMD
     // finds the differing byte between strings: u and p
     // recall that p is the existing best match string,
     // and u is the string we are trying to match.
@@ -93,16 +93,19 @@ module private Helpers =
     // returns 00100000
     // pt. 12 (partial)
     let inline findDifferingBit (b: byte) =
+        assert (b <> 0uy)
         // SWAR trick that sets every bit after the leading bit to 1.
         let b = b ||| (b >>> 1)
         let b = b ||| (b >>> 2)
         let b = b ||| (b >>> 4)
         // Zero all the bits after the leading bit
         b &&& ~~~(b >>> 1)
-        // ~~~z // invert --> somehow, this isn't done by Lynn's code. He must have found another hack.
 
     // experimental approach to calculating the bit mask
-    let findDifferingBit2 (b: byte): byte =
+    // uses hardware intrinsics exposed by .NET
+    // to calculate the leading bit (called a binary log)
+    let inline findDifferingBitv2 (b: byte): byte =
+        assert (b <> 0uy)
         let leadingBit = BitOperations.Log2 (uint32 b)
         1uy <<< leadingBit
 
@@ -125,13 +128,6 @@ module private Helpers =
     let inline compareNodes (a: int) (x: byte) (b: int) (y: byte): bool =
         (a <<< 8) + (int y) < (b <<< 8) + (int x)
 
-open Helpers
-
-// Implementation of a critical bit tree
-// that can only store strings.
-type CritBitTree() =
-    let mutable root: Node option = None
-
     // Walks the tree, to find the leaf node
     // that has the closest match to uBytes
     // pt. 5 and 6
@@ -139,16 +135,27 @@ type CritBitTree() =
         match node with
         | Leaf key -> key
         | Intermediate n ->
-            // Calculate direction
-            // TODO: this can now be optimized.
-            let c =
+            // If the differing byte (n.byte) is beyond the string
+            // e.g. byte = 2 and uBytes is "to"
+            // then the only possibility of finding a matching string
+            // is to look leftwards! e.g., we might have a tree like:
+            //           2
+            //         /   \
+            //      "to"   "towards"
+            // Thus, we always go leftward in that case.
+            let isLeft =
                 let nodeByte = n.byte
-                if nodeByte < Array.length uBytes
-                then uBytes.[nodeByte]
-                else 0uy
-            let isLeft = goLeft n.mask c
+                if nodeByte >= Array.length uBytes then true
+                else goLeft n.mask uBytes.[nodeByte]
             let nextNode = if isLeft then n.left else n.right
             walkTree uBytes nextNode
+
+open Helpers
+
+// Implementation of a critical bit tree
+// that can only store strings.
+type CritBitTree() =
+    let mutable root: Node option = None
 
     member val Count = 0 with get, set
 
@@ -162,7 +169,7 @@ type CritBitTree() =
         | Some n ->
             let uBytes = Encoding.UTF8.GetBytes str
             let key = walkTree uBytes n
-            key = str   // pt. 7
+            key  = str // pt 7.
 
     // Returns true if the add was successful
     // Returns false if the string is already in the tree
@@ -181,7 +188,7 @@ type CritBitTree() =
             | ValueNone -> false // insert has no effect if key exists.
             | ValueSome (newByte, newOtherBits) ->
                 // pt. 12 (partial)
-                let newMask = findDifferingBit newOtherBits
+                let newMask = findDifferingBitv2 newOtherBits
                 // If the differing byte (newByte) is beyond the original string
                 // e.g. pBytes is "to", and uBytes is "too", newBytes = 3,
                 // then the old Node must always go to left child, by construction.

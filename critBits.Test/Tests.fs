@@ -53,6 +53,14 @@ type TestClass () =
         Assert.IsTrue(s.Count = 3)
 
     [<TestMethod>]
+    member _.``Test that walkTree supports prefixes`` () =
+        let s = CritBitTree()
+        Assert.IsTrue(s.Add("to"))
+        Assert.IsTrue(s.Add("towards"))
+        Assert.IsTrue(s.Contains("to"))
+        Assert.IsFalse(s.Add("to"))
+
+    [<TestMethod>]
     member _.``Test lots of inserts`` () =
         // data taken from the paper: Go, F# and Erlang by Jarleberg and Nilsson, 2012
         // Link: https://www.csc.kth.se/utbildning/kth/kurser/DD143X/dkand12/Group6Alexander/anders_jarleberg_kim_nilsson.rapport.pdf
