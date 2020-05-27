@@ -1,11 +1,24 @@
 namespace critBits.Test
 
 open Microsoft.VisualStudio.TestTools.UnitTesting
+open System
 open System.Collections.Generic
 open CritBits
 
 [<TestClass>]
 type TestClass () =
+    // credits to Laurent, from fssnippets
+    // http://www.fssnip.net/L/title/Array-shuffle
+    let rand = new Random()
+
+    let swap (a: _[]) x y =
+        let tmp = a.[x]
+        a.[x] <- a.[y]
+        a.[y] <- tmp
+
+    // shuffle an array (in-place)
+    let shuffle a =
+        Array.iteri (fun i _ -> swap a i (rand.Next(i, Array.length a))) a
 
     [<TestMethod>]
     member _.TestEmpty () =
@@ -76,3 +89,18 @@ type TestClass () =
             Assert.IsTrue(s.Contains(word))
         for word in hSet do
             Assert.IsTrue(s.Contains(word))
+
+    [<TestMethod>]
+    member _.``Test random 0-255`` () =
+        for i in 1..255 do
+            let bytes =
+                [|0..i|]
+                |> Array.map (fun i -> [|(char i)|] |> String)
+            let s = CritBitTree()
+            shuffle bytes
+            bytes
+            |> Array.iter (fun word -> s.Add(word) |> ignore)
+            Assert.IsTrue(s.Count = i+1)
+            [0..i]
+            |> List.map (fun i -> [|char i|] |> String)
+            |> List.iter (fun word -> Assert.IsTrue(s.Contains(word)))
