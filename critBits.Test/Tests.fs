@@ -54,6 +54,8 @@ type TestClass () =
 
     [<TestMethod>]
     member _.``Test lots of inserts`` () =
+        // data taken from the paper: Go, F# and Erlang by Jarleberg and Nilsson, 2012
+        // Link: https://www.csc.kth.se/utbildning/kth/kurser/DD143X/dkand12/Group6Alexander/anders_jarleberg_kim_nilsson.rapport.pdf
         let data = "of each other and the only form of communication that can exist between twoor more processes is by sending each other messages.[10]Since different processes do not share memory with each other programmersdo not have to worry about dead-locks and race conditions when it comes tomaking programs run efficient on multi-core CPUs. This is what often makesErlang a good match for problems that are of a parallel nature. Another im-portant feature of Erlang is that it is possible to hot-swap code during runtime.This can be crucial for server applications that require a high uptime.The interest in Erlang has grown lately.[11] The reason for this is probablydue to its message passing style and how it simplifies concurrent programming.Erlang is not very common in the industry but can be seen occasionally, es-pecially when it comes to networking hardware such as routers. For example,a very successful ATM switch from Ericsson runs Erlang and as a proof of itsstability it has an uptime of 99.999999999 (nine nines).[12"
         let dataArr = data.Split()
         let s = CritBitTree()
@@ -63,4 +65,6 @@ type TestClass () =
             hSet.Add(word) |> ignore
         Assert.IsTrue(s.Count = hSet.Count)
         for word in dataArr do
+            Assert.IsTrue(s.Contains(word))
+        for word in hSet do
             Assert.IsTrue(s.Contains(word))
