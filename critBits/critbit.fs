@@ -150,6 +150,15 @@ module private Helpers =
             let nextNode = if isLeft then n.left else n.right
             walkTree uBytes nextNode
 
+    // prints the leaves under a specific node
+    let leaves (node: Node): string list =
+        let rec helper n =
+            match n with
+            | Leaf key -> [key]
+            | Intermediate n ->
+                List.append (helper n.left) (helper n.right)
+        helper node
+
 open Helpers
 
 // Implementation of a critical bit tree
@@ -241,3 +250,12 @@ type CritBitTree() =
                 // In all 3 Leaf and Intermediate cases, inc count
                 this.Count <- this.Count + 1
                 true
+
+    override _.ToString() =
+        match root with
+        | None -> "{}"
+        | Some node ->
+            let s =
+                leaves node
+                |> String.concat ","
+            "{" + s + "}"
