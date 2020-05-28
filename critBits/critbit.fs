@@ -4,6 +4,7 @@
 // C: https://www.imperialviolet.org/binary/critbit.pdf
 // Nim: https://github.com/nim-lang/Nim/blob/version-1-2/lib/pure/collections/critbits.nim
 // C: https://github.com/blynn/blt/blob/master/blt.c
+// Iterator code based off of the F# Set code
 
 // Main differences from the paper:
 // - The mask (called otherBits in the paper) is now just a regular bit mask
@@ -37,22 +38,26 @@
 //   For simplicity, this library assumes a UTF-8 encoded string.
 //   If necessary, you can change the encoding in the Add() function.
 
-[<NoEquality>]
-[<NoComparison>]
+open System
+open System.Text
+open System.Numerics
+open System.Collections
+open System.Collections.Generic
+
+[<NoEquality; NoComparison>]
 type Node =
     | Leaf of key: string
     | Intermediate of NodeDatum
 and
+    [<NoEquality; NoComparison>]
     NodeDatum =
     {byte: int; // the byte that differs
      mask: byte; // 8bit mask with a 1 at the critical position.
      mutable left: Node;
      mutable right: Node; }
 
-open System.Text
-open System.Numerics
-
-module private Helpers =
+[<AutoOpen>]
+module internal Helpers =
     // Computes whether c has a 0 or a 1 in the crit bit position
     // marked out by mask
     // mask is a 8-bit byte which has a 1 at exactly the critical bit
@@ -101,7 +106,7 @@ module private Helpers =
         // Zero all the bits after the leading bit
         b &&& ~~~(b >>> 1)
 
-    // experimental approach to calculating the bit mask
+    // New approach to calculating the bit mask
     // uses hardware intrinsics exposed by .NET
     // to calculate the leading bit (called a binary log)
     let inline findDifferingBitv2 (b: byte): byte =
@@ -150,7 +155,11 @@ module private Helpers =
             let nextNode = if isLeft then n.left else n.right
             walkTree uBytes nextNode
 
-    // prints the leaves under a specific node
+    // -----------------------------------------------------------------------
+    //             Helper functions for iterating over the tree
+    // -----------------------------------------------------------------------
+
+    // returns the leaves under a specific node
     let leaves (node: Node): string list =
         let rec helper n =
             match n with
@@ -159,7 +168,69 @@ module private Helpers =
                 List.append (helper n.left) (helper n.right)
         helper node
 
-open Helpers
+    // Imperative left-to-right iterators.
+    [<NoEquality; NoComparison>]
+    type CritBitTreeIterator =
+        { mutable stack: Node list;     // invariant: always collapseLHS result
+          mutable started: bool         // true when MoveNext has been called
+        }
+
+    let rec collapseStack s =
+        match s with
+        | [] -> []
+        | Leaf _ :: _ -> s
+        | Intermediate n :: rest -> collapseStack (n.left :: n.right :: rest)
+
+    let mkIterator s = { stack = collapseStack [s]; started = false }
+
+    let notStarted() = raise (InvalidOperationException("Enumeration Not Started"))
+    let alreadyFinished() = raise (InvalidOperationException("Enumeration already finished"))
+
+    let current i =
+        if i.started then
+            match i.stack with
+            | Leaf key :: _ -> key
+            | []            -> alreadyFinished()
+            | _ -> failwith "Stack's top element should always be a leaf"
+        else notStarted()
+
+    let rec moveNext i =
+        if i.started then
+            match i.stack with
+            | Leaf _ :: rest ->
+                i.stack <- collapseStack rest
+                not i.stack.IsEmpty
+            | [] -> false
+            | _ -> failwith "Stack's top element should always be a leaf"
+        else
+            i.started <- true; // The first call to MoveNext "starts" the enumeration.
+            not i.stack.IsEmpty
+
+    let mkIEnumerator s =
+        let mutable i = mkIterator s
+        { new IEnumerator<string> with
+            member _.Current = current i
+          interface IEnumerator with
+            member _.Current = box (current i)
+            member _.MoveNext() = moveNext i
+            member _.Reset() = i <- mkIterator s
+          interface IDisposable with
+            member _.Dispose() = ()
+        }
+
+    // since the root node can be null
+    // helper function
+    let mkOptionalIEnumerator root =
+        match root with
+        | None -> Seq.empty.GetEnumerator()
+        | Some n -> mkIEnumerator n
+
+    let leavesStream (node: Node): seq<string> =
+        {new IEnumerable<string> with
+             member _.GetEnumerator() = mkIEnumerator node
+         interface IEnumerable with
+             member _.GetEnumerator() = mkIEnumerator node :> IEnumerator
+        }
 
 // Implementation of a critical bit tree
 // that can only store strings.
@@ -251,6 +322,10 @@ type CritBitTree() =
                 this.Count <- this.Count + 1
                 true
 
+    // -----------------------------------------------------------------------
+    //                    Interface Implementations
+    // -----------------------------------------------------------------------
+
     override _.ToString() =
         match root with
         | None -> "{}"
@@ -259,3 +334,15 @@ type CritBitTree() =
                 leaves node
                 |> String.concat ","
             "{" + s + "}"
+
+    interface IEnumerable<string> with
+        member _.GetEnumerator() = mkOptionalIEnumerator root
+
+    interface IEnumerable with
+        member _.GetEnumerator() = mkOptionalIEnumerator root :> IEnumerator
+
+    interface IReadOnlyCollection<string> with
+        member this.Count = this.Count
+
+    // TODO: implement ICollection
+    // interface ICollection<'T> with
